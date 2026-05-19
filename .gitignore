@@ -1,0 +1,22 @@
+# Dépendances
+node_modules/
+dist/
+
+# Environnement (NE JAMAIS commit ce fichier)
+.env
+
+# Firebase credentials (NE JAMAIS commit)
+firebase-credentials.json
+serviceAccountKey.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
