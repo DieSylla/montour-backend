@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { TicketStatut } from './entities/ticket.entity';
@@ -7,6 +7,7 @@ import { FileAttenteService } from '../file-attente/file-attente.service';
 
 @Injectable()
 export class TicketService {
+  private readonly logger = new Logger(TicketService.name);
   constructor(
     private readonly firebase: FirebaseService,
     private readonly notificationService: NotificationService,
@@ -27,6 +28,19 @@ export class TicketService {
 
       const { numero, rang, tempsEstime } = await this.fileAttenteService.calculerPosition(dto.prestataireId);
 
+      // Récupérer le nom de l'entreprise
+      let entrepriseNom = null;
+      if (dto.entrepriseId) {
+        try {
+          const entrepriseDoc = await this.firebase.collection('entreprises').doc(dto.entrepriseId).get();
+          if (entrepriseDoc.exists) {
+            entrepriseNom = entrepriseDoc.data()?.nom || null;
+          }
+        } catch (e) {
+          console.warn('Récupération entrepriseNom échouée (non bloquant):', e);
+        }
+      }
+
       const ticketRef = this.firebase.collection('tickets').doc();
       const ticket = {
         id: ticketRef.id,
@@ -35,6 +49,7 @@ export class TicketService {
         clientId,
         prestataireId: dto.prestataireId,
         entrepriseId: dto.entrepriseId,
+        entrepriseNom,
         specialite: dto.specialite,
         statut: TicketStatut.EN_ATTENTE,
         tempsAttenteEstime: tempsEstime,
@@ -116,53 +131,74 @@ export class TicketService {
   }
 
   async getTicketsPrestataire(prestataireId: string) {
-    try {
-      const snapshot = await this.firebase.collection('tickets')
-        .where('prestataireId', '==', prestataireId)
-        .get();
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-      if (snapshot.empty) return [];
+    const snapshot = await this.firebase.collection('tickets')
+      .where('prestataireId', '==', prestataireId)
+      .where('createdAt', '>=', today)
+      .get();
 
-      const tickets = snapshot.docs
-        .map(d => d.data())
-        .filter(t => t.statut === 'EN_ATTENTE' || t.statut === 'APPELE')
-        .sort((a, b) => a.rang - b.rang);
+    if (snapshot.empty) return [];
 
-      return tickets;
-    } catch (error) {
-      console.error('ERREUR getTicketsPrestataire:', error);
-      throw error;
-    }
+    return snapshot.docs.map(d => d.data());
+  } catch (error) {
+    console.error('ERREUR getTicketsPrestataire:', error);
+    throw error;
   }
+}
 
   async appelerTicket(ticketId: string, prestataireId: string) {
-    const ticketDoc = await this.firebase.collection('tickets').doc(ticketId).get();
-    if (!ticketDoc.exists) throw new NotFoundException('Ticket introuvable');
+  const ticketDoc = await this.firebase.collection('tickets').doc(ticketId).get();
+  if (!ticketDoc.exists) throw new NotFoundException('Ticket introuvable');
 
-    const ticket = ticketDoc.data();
-    if (ticket.prestataireId !== prestataireId) throw new BadRequestException('Action non autorisée');
+  const ticket = ticketDoc.data();
+  if (ticket.prestataireId !== prestataireId) throw new BadRequestException('Action non autorisée');
 
-    await this.firebase.collection('tickets').doc(ticketId).update({
-      statut: TicketStatut.APPELE,
-      updatedAt: new Date(),
-    });
+  // Récupérer la position du prestataire
+  const prestataireDoc = await this.firebase.collection('users').doc(prestataireId).get();
+  const prestataire = prestataireDoc.data();
 
-    // Notifier le client
-    try {
-      await this.notificationService.envoyerNotification(ticket.clientId, {
-        type: 'TICKET_APPELE',
-        titre: 'C\'est votre tour !',
-        message: 'Le prestataire vous appelle. Présentez-vous maintenant.',
-        data: { ticketId },
-      });
-    } catch (e) {
-      console.warn('Notification échouée:', (e as any).message);
+  // Mettre à jour statut → APPELÉ
+  await this.firebase.collection('tickets').doc(ticketId).update({
+    statut: 'APPELE',
+    updatedAt: new Date(),
+  });
+
+  // Vérifier présence GPS si disponible
+  if (prestataire?.latitude && prestataire?.longitude) {
+    const estPresent = await this.fileAttenteService.verifierPresenceClient(
+      ticketId,
+      prestataire.latitude,
+      prestataire.longitude
+    );
+
+    if (!estPresent) {
+      // Client potentiellement absent — le scheduler s'en occupera dans 3 min
+      this.logger.log(`Client potentiellement absent : ${ticketId}`);
+      return { message: 'Client appelé. Vérification de présence en cours.' };
     }
-
-    return { message: 'Client appelé avec succès.' };
   }
 
-  // ── Terminer un ticket ───────────────────────────────────────────────
+  // Notifier le client que c'est son tour
+  try {
+    await this.notificationService.envoyerNotification(ticket.clientId, {
+      type: 'TICKET_APPELE',
+      titre: '📣 C\'est votre tour !',
+      message: 'Le prestataire vous appelle. Présentez-vous maintenant.',
+      data: { ticketId },
+    });
+  } catch (e) {
+    console.warn('Notification échouée:', e);
+  }
+
+  // Notifier le suivant de se préparer
+  await this.fileAttenteService.notifierSuivant(prestataireId);
+
+  return { message: 'Client appelé avec succès.' };
+}
+
   async terminerTicket(ticketId: string, prestataireId: string) {
     const ticketDoc = await this.firebase.collection('tickets').doc(ticketId).get();
     if (!ticketDoc.exists) throw new NotFoundException('Ticket introuvable');

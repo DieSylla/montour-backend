@@ -10,11 +10,14 @@ import { FileAttenteModule } from './modules/file-attente/file-attente.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { CreneauModule } from './modules/creneau/creneau.module';
+import { ScheduleModule } from '@nestjs/schedule';
+
 
 @Module({
   imports: [
     // Configuration globale (.env)
     ConfigModule.forRoot({ isGlobal: true }),
+        ScheduleModule.forRoot(),
 
     // Firebase (disponible partout)
     FirebaseModule,

@@ -16,7 +16,6 @@ export class FileAttenteService {
   async calculerPosition(prestataireId: string) {
     const today = new Date().toLocaleDateString('fr-FR');
 
-    // 1. Récupérer les RDV confirmés du jour
     const rdvSnapshot = await this.firebase.collection('reservations')
       .where('prestataireId', '==', prestataireId)
       .where('date', '==', today)
@@ -27,7 +26,6 @@ export class FileAttenteService {
       .map(d => d.data())
       .sort((a, b) => a.heureDebut?.localeCompare(b.heureDebut));
 
-    // 2. Récupérer les tickets immédiats en attente
     const ticketsSnapshot = await this.firebase.collection('tickets')
       .where('prestataireId', '==', prestataireId)
       .where('statut', '==', 'EN_ATTENTE')
@@ -37,30 +35,20 @@ export class FileAttenteService {
       .map(d => d.data())
       .sort((a, b) => a.rang - b.rang);
 
-    // 3. Construire la file combinée
     const heureActuelle = new Date();
     const heureActuelleStr = heureActuelle.toLocaleTimeString('fr-FR', {
-      hour: '2-digit',
-      minute: '2-digit'
+      hour: '2-digit', minute: '2-digit'
     });
 
-    // Trouver les créneaux libres entre les RDV
-    const creneauxOccupes = rdvDuJour.map(r => r.heureDebut);
-
-    // Calculer le rang en tenant compte des RDV futurs
     const rdvFuturs = rdvDuJour.filter(r => r.heureDebut > heureActuelleStr);
     const nbTicketsEnAttente = ticketsEnAttente.length;
 
-    // Trouver la meilleure position pour le nouveau ticket
     let rang = nbTicketsEnAttente + 1;
     let tempsEstime = rang * DUREE_MOYENNE_PAR_CLIENT;
 
-    // Si des RDV sont planifiés, vérifier s'il y a des trous
     if (rdvFuturs.length > 0) {
       const positionOptimale = this.trouverPositionOptimale(
-        rdvFuturs,
-        ticketsEnAttente,
-        heureActuelleStr
+        rdvFuturs, ticketsEnAttente, heureActuelleStr
       );
       rang = positionOptimale.rang;
       tempsEstime = positionOptimale.tempsEstime;
@@ -75,48 +63,39 @@ export class FileAttenteService {
     ticketsEnAttente: any[],
     heureActuelle: string
   ): { rang: number; tempsEstime: number } {
-    // Construire la timeline de la journée
     const timeline: { heure: string; type: 'rdv' | 'ticket' }[] = [];
 
-    // Ajouter les RDV
     rdvFuturs.forEach(rdv => {
       timeline.push({ heure: rdv.heureDebut, type: 'rdv' });
     });
 
-    // Ajouter les tickets existants
     ticketsEnAttente.forEach((_, index) => {
       timeline.push({ heure: `ticket_${index}`, type: 'ticket' });
     });
 
-    // Trier par heure
     timeline.sort((a, b) => {
       if (a.type === 'ticket') return 1;
       if (b.type === 'ticket') return -1;
       return a.heure.localeCompare(b.heure);
     });
 
-    // Trouver le premier trou disponible
     let position = 1;
     let trouveUnTrou = false;
 
     for (let i = 0; i < rdvFuturs.length - 1; i++) {
       const heureRdv1 = rdvFuturs[i].heureDebut;
       const heureRdv2 = rdvFuturs[i + 1].heureDebut;
-
-      // Vérifier s'il y a un trou entre deux RDV
       const minutes1 = this.heureEnMinutes(heureRdv1);
       const minutes2 = this.heureEnMinutes(heureRdv2);
       const diff = minutes2 - minutes1;
 
-      // Compter les tickets déjà dans ce trou
       const ticketsDansTrou = ticketsEnAttente.filter(t => {
         const tempsTicket = this.heureEnMinutes(heureActuelle) + (t.rang * DUREE_MOYENNE_PAR_CLIENT);
         return tempsTicket >= minutes1 && tempsTicket < minutes2;
       }).length;
 
-      // Si le trou peut accueillir un ticket supplémentaire
       if (diff > DUREE_MOYENNE_PAR_CLIENT && ticketsDansTrou === 0) {
-        position = i + 2; // Après le premier RDV
+        position = i + 2;
         trouveUnTrou = true;
         break;
       }
@@ -134,6 +113,92 @@ export class FileAttenteService {
     if (!heure || heure.includes('ticket_')) return 0;
     const [h, m] = heure.split(':').map(Number);
     return h * 60 + m;
+  }
+
+  // ── Notifier le suivant qu'il doit se préparer ─────────────────────
+  async notifierSuivant(prestataireId: string) {
+    try {
+      const snapshot = await this.firebase.collection('tickets')
+        .where('prestataireId', '==', prestataireId)
+        .where('statut', '==', 'EN_ATTENTE')
+        .orderBy('rang', 'asc')
+        .get();
+
+      if (snapshot.empty) return;
+
+      // Le client en rang 1 = prochain à être appelé
+      const premierTicket = snapshot.docs[0].data();
+
+      await this.notificationService.envoyerNotification(premierTicket.clientId, {
+        type: 'PREPAREZ_VOUS',
+        titre: '⏰ Préparez-vous !',
+        message: 'Vous êtes le prochain dans la file. Tenez-vous prêt, c\'est bientôt votre tour.',
+        data: { ticketId: premierTicket.id, rang: 1 },
+      });
+    } catch (e) {
+      console.warn('Notification suivant échouée:', e);
+    }
+  }
+
+  // ── Gérer l'absence d'un client ────────────────────────────────────
+  async marquerAbsentEtAppelerSuivant(ticketId: string, prestataireId: string) {
+    const ticketDoc = await this.firebase.collection('tickets').doc(ticketId).get();
+    if (!ticketDoc.exists) return;
+
+    const ticket = ticketDoc.data();
+
+    // 1. Marquer le client comme absent
+    await this.firebase.collection('tickets').doc(ticketId).update({
+      statut: 'ABSENT',
+      updatedAt: new Date(),
+    });
+
+    // 2. Notifier le client absent
+    try {
+      await this.notificationService.envoyerNotification(ticket.clientId, {
+        type: 'TICKET_ABSENT',
+        titre: 'Ticket annulé',
+        message: 'Vous avez été marqué absent. Votre ticket a été annulé.',
+        data: { ticketId },
+      });
+    } catch (e) {
+      console.warn('Notification absent échouée:', e);
+    }
+
+    // 3. Recalculer la file
+    await this.recalculerApresAnnulation(prestataireId, ticket.rang);
+
+    // 4. Appeler automatiquement le suivant
+    const suivantSnapshot = await this.firebase.collection('tickets')
+      .where('prestataireId', '==', prestataireId)
+      .where('statut', '==', 'EN_ATTENTE')
+      .orderBy('rang', 'asc')
+      .get();
+
+    if (!suivantSnapshot.empty) {
+      const suivant = suivantSnapshot.docs[0];
+      const suivantData = suivant.data();
+
+      // Mettre à jour le statut du suivant
+      await suivant.ref.update({
+        statut: 'APPELE',
+        updatedAt: new Date(),
+      });
+
+      // Notifier le suivant que c'est son tour
+      try {
+        await this.notificationService.envoyerNotification(suivantData.clientId, {
+          type: 'TICKET_APPELE',
+          titre: '📣 C\'est votre tour !',
+          message: 'Le prestataire vous appelle. Présentez-vous maintenant.',
+          data: { ticketId: suivant.id },
+        });
+      } catch (e) {
+        console.warn('Notification suivant échouée:', e);
+      }
+    }
+
+    return { message: 'Client marqué absent. Le suivant a été appelé automatiquement.' };
   }
 
   async recalculerApresAnnulation(prestataireId: string, rangAnnule: number) {
@@ -157,6 +222,7 @@ export class FileAttenteService {
         updatedAt: new Date(),
       });
 
+      // Notifier chaque client que son rang a avancé
       try {
         await this.notificationService.envoyerNotification(ticket.clientId, {
           type: 'RANG_MISE_A_JOUR',
@@ -173,8 +239,6 @@ export class FileAttenteService {
   }
 
   async recalculerApresAnnulationRdv(prestataireId: string, creneauId: string) {
-    // Quand un RDV est annulé, vérifier s'il y a des tickets en attente
-    // et leur proposer de prendre ce créneau libéré
     const ticketsSnapshot = await this.firebase.collection('tickets')
       .where('prestataireId', '==', prestataireId)
       .where('statut', '==', 'EN_ATTENTE')
@@ -183,7 +247,6 @@ export class FileAttenteService {
 
     if (ticketsSnapshot.empty) return;
 
-    // Notifier le premier de la file que son temps d'attente a diminué
     const premierTicket = ticketsSnapshot.docs[0].data();
     try {
       await this.notificationService.envoyerNotification(premierTicket.clientId, {
@@ -196,7 +259,6 @@ export class FileAttenteService {
       console.warn('Notification échouée:', e);
     }
 
-    // Recalculer les rangs de tous les tickets
     const batch = this.firebase.getFirestore().batch();
     ticketsSnapshot.docs.forEach((doc, index) => {
       const nouveauRang = index + 1;

@@ -64,35 +64,64 @@ export class ReservationService {
     });
   }
 
-  async getMesReservations(clientId: string) {
-    try {
-      const snapshot = await this.firebase.collection('reservations')
-        .where('clientId', '==', clientId)
-        .get();
-      if (snapshot.empty) return [];
-      return snapshot.docs
-        .map(d => d.data())
-        .sort((a, b) => b.createdAt?.toMillis?.() - a.createdAt?.toMillis?.());
-    } catch (error) {
-      console.error('ERREUR getMesReservations:', error);
-      throw error;
-    }
+ async getMesReservations(clientId: string) {
+  try {
+    const snapshot = await this.firebase.collection('reservations')
+      .where('clientId', '==', clientId)
+      .get();
+    if (snapshot.empty) return [];
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    console.log('TODAY:', today);
+    
+    const all = snapshot.docs.map(d => d.data());
+    console.log('TOUTES LES RESERVATIONS:', all.map(r => ({ date: r.date, statut: r.statut })));
+    
+    const filtered = all.filter(r => {
+      const parts = (r.date || '').split('/').map(Number);
+      const dateRdv = new Date(parts[2], parts[1] - 1, parts[0]);
+      console.log('DATE RDV:', dateRdv, '>=', today, '?', dateRdv >= today);
+      return dateRdv >= today && (r.statut === 'CONFIRMEE' || r.statut === 'EN_ATTENTE');
+    });
+    
+    console.log('APRES FILTRE:', filtered.length);
+    return filtered;
+  } catch (error) {
+    console.error('ERREUR getMesReservations:', error);
+    throw error;
   }
+}
 
-  async getReservationsPrestataire(prestataireId: string) {
-    try {
-      const snapshot = await this.firebase.collection('reservations')
-        .where('prestataireId', '==', prestataireId)
-        .get();
-      if (snapshot.empty) return [];
-      return snapshot.docs
-        .map(d => d.data())
-        .sort((a, b) => a.createdAt?.toMillis?.() - b.createdAt?.toMillis?.());
-    } catch (error) {
-      console.error('ERREUR getReservationsPrestataire:', error);
-      throw error;
-    }
+ async getReservationsPrestataire(prestataireId: string) {
+  try {
+    const snapshot = await this.firebase.collection('reservations')
+      .where('prestataireId', '==', prestataireId)
+      .get();
+    if (snapshot.empty) return [];
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return snapshot.docs
+      .map(d => d.data())
+      .filter(r => {
+        const parts = (r.date || '').split('/').map(Number);
+        const dateRdv = new Date(parts[2], parts[1] - 1, parts[0]);
+        return dateRdv >= today &&
+          (r.statut === 'CONFIRMEE' || r.statut === 'EN_ATTENTE');
+      })
+      .sort((a, b) => {
+        if (a.date !== b.date) return a.date?.localeCompare(b.date);
+        return (a.heureDebut || '').localeCompare(b.heureDebut || '');
+      });
+  } catch (error) {
+    console.error('ERREUR getReservationsPrestataire:', error);
+    throw error;
   }
+}
+
+
 
   async annulerReservation(reservationId: string, clientId: string) {
     const doc = await this.firebase.collection('reservations').doc(reservationId).get();
@@ -266,4 +295,46 @@ export class ReservationService {
       data: { reservationId },
     });
   }
+
+ async getReservationsParPlage(plageId: string, prestataireId: string) {
+  const slotsSnap = await this.firebase.collection('creneaux')
+    .where('plageId', '==', plageId)
+    .where('prestataireId', '==', prestataireId)
+    .get();
+
+  if (slotsSnap.empty) return [];
+
+  const creneauIds = slotsSnap.docs.map(d => d.id);
+
+  const reservations = [];
+  for (const creneauId of creneauIds) {
+    const snap = await this.firebase.collection('reservations')
+      .where('creneauId', '==', creneauId)
+      .where('prestataireId', '==', prestataireId)
+      .get();
+
+    for (const doc of snap.docs) {
+      const rdv = doc.data();
+
+      // Filtrer uniquement EN_ATTENTE et CONFIRMEE
+      if (rdv.statut !== 'EN_ATTENTE' && rdv.statut !== 'CONFIRMEE') continue;
+
+      // Récupérer le nom du client
+      try {
+        const clientDoc = await this.firebase.collection('users').doc(rdv.clientId).get();
+        if (clientDoc.exists) {
+          const client = clientDoc.data();
+          rdv.clientNom = `${client.prenom} ${client.nom}`;
+        }
+      } catch (e) {
+        rdv.clientNom = null;
+      }
+
+      reservations.push(rdv);
+    }
+  }
+
+  // Trier par heure de RDV
+  return reservations.sort((a, b) => (a.heureDebut || '').localeCompare(b.heureDebut || ''));
+}
 }

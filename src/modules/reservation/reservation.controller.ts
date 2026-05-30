@@ -23,10 +23,17 @@ export class ReservationController {
     return this.reservationService.getReservationsCreneau(creneauId, user.sub);
   }
 
+  @Get('plage/:plageId')
+  async getReservationsParPlage(
+    @Param('plageId') plageId: string,
+    @CurrentUser() user: any
+  ) {
+    return this.reservationService.getReservationsParPlage(plageId, user.sub);
+  }
+
   @Post()
   async creer(@CurrentUser() user: any, @Body() dto: any) {
     const result = await this.reservationService.creerReservation(user.sub, dto);
-    // Envoyer notifications après création (non bloquant)
     this.reservationService.notifierApresReservation(result.reservationId).catch(() => {});
     return result;
   }

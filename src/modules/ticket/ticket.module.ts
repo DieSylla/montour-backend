@@ -1,14 +1,19 @@
 import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
 import { TicketController } from './ticket.controller';
 import { TicketService } from './ticket.service';
-import { AuthModule } from '../auth/auth.module';
-import { NotificationModule } from '../notification/notification.module';
+import { AbsenceScheduler } from './absence.scheduler';
 import { FileAttenteModule } from '../file-attente/file-attente.module';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
-  imports: [AuthModule, NotificationModule, FileAttenteModule],
+  imports: [
+    FileAttenteModule,
+    NotificationModule,
+    JwtModule.register({}),
+  ],
   controllers: [TicketController],
-  providers: [TicketService],
+  providers: [TicketService, AbsenceScheduler],
   exports: [TicketService],
 })
 export class TicketModule {}
