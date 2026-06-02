@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, BadRequestException, UnauthorizedException, NotFoundException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { RegisterDto } from './dto/register.dto';
@@ -112,4 +112,47 @@ console.error('ERREUR LOGIN:', (error as any).message);      throw error;
     }
     return entreprise;
   }
+
+
+  async updateProfile(userId: string, data: {
+  nom?: string;
+  prenom?: string;
+  telephone?: string;
+  specialite?: string;
+  confirmationMode?: string;
+}) {
+  const userDoc = await this.firebase.collection('users').doc(userId).get();
+  if (!userDoc.exists) throw new NotFoundException('Utilisateur introuvable');
+
+  const updates: any = { updatedAt: new Date() };
+  if (data.nom)              updates.nom = data.nom;
+  if (data.prenom)           updates.prenom = data.prenom;
+  if (data.telephone)        updates.telephone = data.telephone;
+  if (data.specialite)       updates.specialite = data.specialite;
+  if (data.confirmationMode) updates.confirmationMode = data.confirmationMode;
+
+  await this.firebase.collection('users').doc(userId).update(updates);
+
+  // Retourner l'utilisateur mis à jour
+  const updated = await this.firebase.collection('users').doc(userId).get();
+  const { otp, otpExpires, password, ...u } = updated.data() as any;
+  return u;
+}
+
+async changePassword(userId: string, ancienMotDePasse: string, nouveauMotDePasse: string) {
+  const userDoc = await this.firebase.collection('users').doc(userId).get();
+  if (!userDoc.exists) throw new NotFoundException('Utilisateur introuvable');
+
+  const user = userDoc.data();
+  const valide = await bcrypt.compare(ancienMotDePasse, user.password);
+  if (!valide) throw new BadRequestException('Ancien mot de passe incorrect');
+
+  const hash = await bcrypt.hash(nouveauMotDePasse, 10);
+  await this.firebase.collection('users').doc(userId).update({
+    password: hash,
+    updatedAt: new Date(),
+  });
+
+  return { message: 'Mot de passe mis à jour avec succès' };
+}
 }
