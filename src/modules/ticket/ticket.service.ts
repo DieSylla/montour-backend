@@ -225,4 +225,13 @@ export class TicketService {
 
     return { message: 'Ticket terminé avec succès.' };
   }
+
+  async getNbPersonnesFile(prestataireId: string) {
+  const snapshot = await this.firebase.collection('tickets')
+    .where('prestataireId', '==', prestataireId)
+    .where('statut', 'in', ['EN_ATTENTE', 'APPELE'])
+    .get();
+
+  return { total: snapshot.size };
+}
 }

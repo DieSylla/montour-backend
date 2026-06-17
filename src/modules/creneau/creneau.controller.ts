@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Param, Delete, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Delete, Patch, UseGuards } from '@nestjs/common';
 import { CreneauService } from './creneau.service';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -26,5 +26,14 @@ export class CreneauController {
   @Delete(':id')
   supprimer(@Param('id') id: string, @CurrentUser() user: any) {
     return this.creneauService.supprimerCreneau(id, user.sub);
+  }
+
+  @Patch(':id/toggle')
+  toggleCreneau(
+    @Param('id') id: string,
+    @Body('actif') actif: boolean,
+    @CurrentUser() user: any
+  ) {
+    return this.creneauService.toggleCreneau(id, actif, user.sub);
   }
 }

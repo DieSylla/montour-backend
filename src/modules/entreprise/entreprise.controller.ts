@@ -49,6 +49,15 @@ export class EntrepriseController {
     return this.entrepriseService.validerEntreprise(id, user.sub);
   }
 
+  @Patch(':id/toggle')
+@UseGuards(FirebaseAuthGuard)
+toggleEntreprise(
+  @Param('id') id: string,
+  @Body('active') active: boolean
+) {
+  return this.entrepriseService.toggleEntreprise(id, active);
+}
+
   @Patch(':id/rejeter')
   @UseGuards(FirebaseAuthGuard, RolesGuard)
   @Roles('ADMIN')

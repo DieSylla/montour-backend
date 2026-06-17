@@ -40,4 +40,8 @@ export class TicketController {
   annulerTicket(@Param('id') id: string, @CurrentUser() user: any) {
     return this.ticketService.annulerTicket(id, user.sub);
   }
+  @Get('file/:prestataireId')
+getFile(@Param('prestataireId') prestataireId: string) {
+  return this.ticketService.getNbPersonnesFile(prestataireId);
+}
 }

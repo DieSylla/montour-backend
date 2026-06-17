@@ -1,14 +1,14 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class CreneauService {
-  constructor(private readonly firebase: FirebaseService) {}
+  constructor(
+    private readonly firebase: FirebaseService,
+    private readonly notificationService: NotificationService
+  ) {}
 
-  /**
-   * Crée automatiquement les slots à partir d'une plage horaire.
-   * Ex: 08:00 → 10:00, 30min = slots [08:00-08:30, 08:30-09:00, 09:00-09:30, 09:30-10:00]
-   */
   async creerCreneau(prestataireId: string, dto: {
     heureDebut: string;
     heureFin: string;
@@ -24,7 +24,6 @@ export class CreneauService {
     const creneauxCrees = [];
 
     for (const date of dto.dates) {
-      // Stocker aussi la plage parente pour l'affichage prestataire
       const plagePrestataireRef = this.firebase.collection('plages').doc();
       await plagePrestataireRef.set({
         id: plagePrestataireRef.id,
@@ -34,10 +33,10 @@ export class CreneauService {
         dureePrestation: dto.dureePrestation,
         date,
         nbSlots: slots.length,
+        actif: true,
         createdAt: new Date(),
       });
 
-      // Créer chaque slot individuellement
       for (const slot of slots) {
         const ref = this.firebase.collection('creneaux').doc();
         const creneau = {
@@ -65,9 +64,6 @@ export class CreneauService {
     };
   }
 
-  /**
-   * Génère les slots à partir d'une plage horaire.
-   */
   private genererSlots(heureDebut: string, heureFin: string, dureeMin: number) {
     const [hD, mD] = heureDebut.split(':').map(Number);
     const [hF, mF] = heureFin.split(':').map(Number);
@@ -93,9 +89,6 @@ export class CreneauService {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   }
 
-  /**
-   * Pour le prestataire : retourne les plages (groupées) pas les slots individuels.
-   */
   async getCreneauxPrestataire(prestataireId: string) {
     const snapshot = await this.firebase.collection('plages')
       .where('prestataireId', '==', prestataireId)
@@ -115,9 +108,6 @@ export class CreneauService {
       });
   }
 
-  /**
-   * Pour le client : retourne les slots DISPONIBLES uniquement.
-   */
   async getCreneauxDisponibles(prestataireId: string) {
     const snapshot = await this.firebase.collection('creneaux')
       .where('prestataireId', '==', prestataireId)
@@ -129,10 +119,20 @@ export class CreneauService {
     const now = new Date();
     const heureActuelleMin = now.getHours() * 60 + now.getMinutes();
 
+    // Récupérer les plages actives
+    const plagesSnap = await this.firebase.collection('plages')
+      .where('prestataireId', '==', prestataireId)
+      .where('actif', '==', true)
+      .get();
+
+    const plagesActives = new Set(plagesSnap.docs.map(d => d.id));
+
     return snapshot.docs
       .map(d => d.data())
       .filter(c => {
         if (!c.date || !c.heureDebut) return false;
+        // Vérifier que la plage parente est active
+        if (c.plageId && !plagesActives.has(c.plageId)) return false;
         const [jour, mois, annee] = c.date.split('/').map(Number);
         const [hD, mD] = c.heureDebut.split(':').map(Number);
         const dateC = new Date(annee, mois-1, jour);
@@ -153,18 +153,13 @@ export class CreneauService {
       });
   }
 
-  /**
-   * Supprime une plage et tous ses slots.
-   */
   async supprimerCreneau(plageId: string, prestataireId: string) {
-    // Chercher d'abord dans les plages
     const plageDoc = await this.firebase.collection('plages').doc(plageId).get();
 
     if (plageDoc.exists) {
       const plage = plageDoc.data();
       if (plage.prestataireId !== prestataireId) throw new BadRequestException('Action non autorisée');
 
-      // Supprimer tous les slots de cette plage
       const slotsSnap = await this.firebase.collection('creneaux')
         .where('plageId', '==', plageId).get();
 
@@ -176,12 +171,42 @@ export class CreneauService {
       return { message: `Plage et ${slotsSnap.size} slot(s) supprimés` };
     }
 
-    // Fallback : supprimer un slot individuel
     const slotDoc = await this.firebase.collection('creneaux').doc(plageId).get();
     if (!slotDoc.exists) throw new NotFoundException('Créneau introuvable');
     const slot = slotDoc.data();
     if (slot.prestataireId !== prestataireId) throw new BadRequestException('Action non autorisée');
     await slotDoc.ref.delete();
     return { message: 'Slot supprimé' };
+  }
+
+  async toggleCreneau(creneauId: string, actif: boolean, prestataireId: string) {
+    const doc = await this.firebase.collection('plages').doc(creneauId).get();
+    if (!doc.exists) throw new NotFoundException('Créneau introuvable');
+
+    const plage = doc.data();
+    if (plage.prestataireId !== prestataireId) throw new BadRequestException('Action non autorisée');
+
+    await this.firebase.collection('plages').doc(creneauId).update({
+      actif,
+      updatedAt: new Date()
+    });
+
+    if (!actif) {
+      const reservations = await this.firebase.collection('reservations')
+        .where('plageId', '==', creneauId)
+        .where('statut', '==', 'EN_ATTENTE')
+        .get();
+
+      for (const r of reservations.docs) {
+        await r.ref.update({ statut: 'ANNULEE', updatedAt: new Date() });
+        await this.notificationService.envoyerNotification(r.data().clientId, {
+          type: 'RDV_ANNULE',
+          titre: 'Créneau désactivé',
+          message: 'Le prestataire a désactivé ce créneau. Votre réservation a été annulée.',
+        });
+      }
+    }
+
+    return { message: actif ? 'Créneau activé' : 'Créneau désactivé', actif };
   }
 }

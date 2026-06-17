@@ -43,51 +43,61 @@ export class AuthService {
     return { message: 'Inscription réussie.', userId, otp };
   }
 
-  async login(email: string, password: string) {
+async login(email: string, password: string) {
+  try {
+    console.log('LOGIN tentative pour:', email);
+    const snapshot = await this.firebase.collection('users')
+      .where('email', '==', email).get();
+    console.log('Users trouvés:', snapshot.size);
+    if (snapshot.empty) throw new UnauthorizedException('Email ou mot de passe incorrect');
+
+    const user = snapshot.docs[0].data();
+    console.log('User:', user.email, 'role:', user.role);
+
+    const isValid = await bcrypt.compare(password, user.password);
+    console.log('Password valide:', isValid);
+    if (!isValid) throw new UnauthorizedException('Email ou mot de passe incorrect');
+    if (!user.isVerified) throw new UnauthorizedException('Veuillez vérifier votre compte');
+
+    const token = this.jwt.sign({ sub: user.id, email: user.email, role: user.role });
+    console.log('Token OK');
+
+    let entrepriseNom = null;
     try {
-      console.log('LOGIN tentative pour:', email);
-      const snapshot = await this.firebase.collection('users')
-        .where('email', '==', email).get();
-      console.log('Users trouvés:', snapshot.size);
-      if (snapshot.empty) throw new UnauthorizedException('Email ou mot de passe incorrect');
-
-      const user = snapshot.docs[0].data();
-      console.log('User:', user.email, 'role:', user.role);
-
-      const isValid = await bcrypt.compare(password, user.password);
-      console.log('Password valide:', isValid);
-      if (!isValid) throw new UnauthorizedException('Email ou mot de passe incorrect');
-      if (!user.isVerified) throw new UnauthorizedException('Veuillez vérifier votre compte');
-
-      const token = this.jwt.sign({ sub: user.id, email: user.email, role: user.role });
-      console.log('Token OK');
-
-      let entrepriseNom = null;
-      try {
-        if (user.entrepriseId) {
-          const doc = await this.firebase.collection('entreprises').doc(user.entrepriseId).get();
-          entrepriseNom = doc.exists ? doc.data()?.nom || null : null;
-          console.log('Entreprise:', entrepriseNom);
+      if (user.entrepriseId) {
+        const doc = await this.firebase.collection('entreprises').doc(user.entrepriseId).get();
+        
+        // Vérifier que l'entreprise est active
+        if (doc.exists && doc.data()?.active === false) {
+          throw new UnauthorizedException('Votre entreprise a été désactivée. Contactez l\'administrateur.');
         }
-      } catch (e) {
-console.warn('Entreprise non trouvée:', (e as any).message);      }
 
-      return {
-        access_token: token,
-        user: {
-          id: user.id, nom: user.nom, prenom: user.prenom,
-          email: user.email, role: user.role,
-          specialite: user.specialite || null,
-          entrepriseId: user.entrepriseId || null,
-          entrepriseNom,
-          telephone: user.telephone || null,
-          confirmationMode: user.confirmationMode || null,
-        },
-      };
-    } catch (error) {
-console.error('ERREUR LOGIN:', (error as any).message);      throw error;
+        entrepriseNom = doc.exists ? doc.data()?.nom || null : null;
+        console.log('Entreprise:', entrepriseNom);
+      }
+    } catch (e) {
+      // Si c'est une UnauthorizedException on la relance
+      if ((e as any).status === 401) throw e;
+      console.warn('Entreprise non trouvée:', (e as any).message);
     }
+
+    return {
+      access_token: token,
+      user: {
+        id: user.id, nom: user.nom, prenom: user.prenom,
+        email: user.email, role: user.role,
+        specialite: user.specialite || null,
+        entrepriseId: user.entrepriseId || null,
+        entrepriseNom,
+        telephone: user.telephone || null,
+        confirmationMode: user.confirmationMode || null,
+      },
+    };
+  } catch (error) {
+    console.error('ERREUR LOGIN:', (error as any).message);
+    throw error;
   }
+}
 
   async verifyOtp(userId: string, otp: string) {
     const userDoc = await this.firebase.collection('users').doc(userId).get();
@@ -154,5 +164,10 @@ async changePassword(userId: string, ancienMotDePasse: string, nouveauMotDePasse
   });
 
   return { message: 'Mot de passe mis à jour avec succès' };
+}
+
+async saveFcmToken(userId: string, token: string) {
+  await this.firebase.collection('users').doc(userId).update({ fcmToken: token });
+  return { message: 'Token FCM sauvegardé' };
 }
 }

@@ -3,6 +3,7 @@ import { CreneauController } from './creneau.controller';
 import { CreneauService } from './creneau.service';
 import { FirebaseModule } from '../../firebase/firebase.module';
 import { JwtModule } from '@nestjs/jwt';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [
@@ -10,6 +11,7 @@ import { JwtModule } from '@nestjs/jwt';
     JwtModule.register({
       secret: process.env.JWT_SECRET || 'secret',
     }),
+    NotificationModule,
   ],
   controllers: [CreneauController],
   providers: [CreneauService],

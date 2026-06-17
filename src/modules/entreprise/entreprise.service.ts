@@ -103,4 +103,16 @@ export class EntrepriseService {
       return safe;
     });
   }
+
+  async toggleEntreprise(entrepriseId: string, active: boolean) {
+  const doc = await this.firebase.collection('entreprises').doc(entrepriseId).get();
+  if (!doc.exists) throw new NotFoundException('Entreprise introuvable');
+
+  await this.firebase.collection('entreprises').doc(entrepriseId).update({
+    active,
+    updatedAt: new Date()
+  });
+
+  return { message: active ? 'Entreprise activée' : 'Entreprise désactivée', active };
+}
 }

@@ -46,4 +46,13 @@ export class AuthController {
   ) {
     return this.authService.changePassword(user.sub, body.ancienMotDePasse, body.nouveauMotDePasse);
   }
+
+  @Patch('fcm-token')
+  @UseGuards(FirebaseAuthGuard)
+  async saveFcmToken(
+    @CurrentUser() user: any,
+    @Body('token') token: string
+  ) {
+    return this.authService.saveFcmToken(user.sub, token);
+  }
 }
