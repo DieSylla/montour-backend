@@ -14,7 +14,7 @@ Application de gestion de files d'attente et rendez-vous digitaux.
 
 ```bash
 # Cloner le projet
-git clone https://github.com/TON-USERNAME/montour-backend.git
+git clone https://github.com/DieSylla/montour-backend.git
 cd montour-backend
 
 # Installer les dépendances
